@@ -31,6 +31,7 @@ def init_db():
     conn = connect_db()
     cur = conn.cursor()
 
+    # Bảng danh mục món ăn
     cur.execute("""
         CREATE TABLE IF NOT EXISTS menu (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +43,7 @@ def init_db():
         )
     """)
 
+    # Bảng thông tin hóa đơn
     cur.execute("""
         CREATE TABLE IF NOT EXISTS invoices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,6 +63,7 @@ def init_db():
         )
     """)
 
+    # Bảng chi tiết món ăn trong hóa đơn
     cur.execute("""
         CREATE TABLE IF NOT EXISTS invoice_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +76,7 @@ def init_db():
         )
     """)
 
-    # --- 1. TỰ ĐỘNG MIGRATION CHO BẢNG INVOICES ---
+    # --- 1. TỰ ĐỘNG MIGRATION CHO BẢNG INVOICES (DB CŨ) ---
     cur.execute("PRAGMA table_info(invoices)")
     inv_cols = [col[1] for col in cur.fetchall()]
     
@@ -93,7 +96,7 @@ def init_db():
         if col not in inv_cols:
             cur.execute(f"ALTER TABLE invoices ADD COLUMN {col} {col_type}")
 
-    # --- 2. TỰ ĐỘNG MIGRATION CHO BẢNG INVOICE_ITEMS ---
+    # --- 2. TỰ ĐỘNG MIGRATION CHO BẢNG INVOICE_ITEMS (DB CŨ) ---
     cur.execute("PRAGMA table_info(invoice_items)")
     item_cols = [col[1] for col in cur.fetchall()]
 
@@ -110,7 +113,7 @@ def init_db():
         if col not in item_cols:
             cur.execute(f"ALTER TABLE invoice_items ADD COLUMN {col} {col_type}")
 
-    # Menu mẫu - chỉ khởi tạo nếu menu trống
+    # Khởi tạo dữ liệu mẫu nếu bảng menu còn trống
     cur.execute("SELECT COUNT(*) FROM menu")
     if cur.fetchone()[0] == 0:
         sample = [
@@ -212,7 +215,7 @@ def save_invoice(info, cart):
 init_db()
 
 # =========================================================
-# SESSION
+# SESSION STATE
 # =========================================================
 
 if "cart" not in st.session_state:
@@ -240,7 +243,7 @@ def add_item(item, quantity):
 
 
 # =========================================================
-# GIAO DIỆN
+# GIAO DIỆN HỆ THỐNG
 # =========================================================
 
 st.markdown("""
@@ -284,7 +287,7 @@ with h2:
 st.divider()
 
 # =========================================================
-# SIDEBAR
+# SIDEBAR NAVIGATION
 # =========================================================
 
 st.sidebar.title("🍀 CỎ BỐN LÁ")
@@ -300,7 +303,7 @@ page = st.sidebar.radio(
 )
 
 # =========================================================
-# 1. BÁN HÀNG
+# 1. TRANG BÁN HÀNG
 # =========================================================
 
 if page == "🧾 Bán hàng":
@@ -406,16 +409,14 @@ if page == "🧾 Bán hàng":
 
     if not st.session_state.cart:
         st.info(
-            "Chưa có món. Nhân viên chỉ cần chọn món trong MENU phía trên, "
-            "không cần tự nhập tên món."
+            "Chưa có món. Nhân viên chọn món trong MENU phía trên "
+            "để thêm vào hóa đơn."
         )
 
     else:
         for i, item in enumerate(st.session_state.cart):
 
-            c1, c2, c3, c4, c5 = st.columns(
-                [3, 1, 1.5, 1.5, 0.6]
-            )
+            c1, c2, c3, c4, c5 = st.columns([3, 1, 1.5, 1.5, 0.6])
 
             with c1:
                 st.write(f"**{item['name']}**")
@@ -436,9 +437,7 @@ if page == "🧾 Bán hàng":
 
         st.divider()
 
-        subtotal = sum(
-            item["amount"] for item in st.session_state.cart
-        )
+        subtotal = sum(item["amount"] for item in st.session_state.cart)
 
         c1, c2 = st.columns(2)
 
@@ -560,24 +559,19 @@ if page == "🧾 Bán hàng":
                     st.balloons()
 
         with b2:
-            if st.button(
-                "🗑️ XÓA BILL",
-                width="stretch"
-            ):
+            if st.button("🗑️ XÓA BILL", width="stretch"):
                 st.session_state.cart = []
                 st.rerun()
 
 # =========================================================
-# 2. QUẢN LÝ MÓN
+# 2. TRANG QUẢN LÝ MÓN
 # =========================================================
 
 elif page == "🍽️ Quản lý món":
 
     st.subheader("🍽️ QUẢN LÝ MENU MÓN ĂN")
 
-    tab1, tab2 = st.tabs(
-        ["➕ Thêm món", "📋 Danh sách món"]
-    )
+    tab1, tab2 = st.tabs(["➕ Thêm món", "📋 Danh sách món"])
 
     with tab1:
         with st.form("add_food"):
@@ -603,10 +597,7 @@ elif page == "🍽️ Quản lý món":
                 ["Phần", "Nồi", "Đĩa", "Ly", "Lon", "Chai", "Cái"]
             )
 
-            if st.form_submit_button(
-                "➕ THÊM MÓN",
-                type="primary"
-            ):
+            if st.form_submit_button("➕ THÊM MÓN", type="primary"):
                 if not name.strip():
                     st.error("Vui lòng nhập tên món.")
                 elif price <= 0:
@@ -672,9 +663,7 @@ elif page == "🍽️ Quản lý món":
                 )
             )
 
-            selected = next(
-                x for x in foods if x["id"] == selected_id
-            )
+            selected = next(x for x in foods if x["id"] == selected_id)
 
             new_name = st.text_input("Tên món", value=selected["name"])
             new_price = st.number_input(
@@ -728,7 +717,7 @@ elif page == "🍽️ Quản lý món":
                     st.rerun()
 
 # =========================================================
-# 3. HÓA ĐƠN
+# 3. TRANG LỊCH SỬ HÓA ĐƠN
 # =========================================================
 
 elif page == "📜 Hóa đơn":
@@ -795,7 +784,7 @@ elif page == "📜 Hóa đơn":
         )
 
 # =========================================================
-# 4. DOANH THU
+# 4. TRANG BÁO CÁO DOANH THU
 # =========================================================
 
 elif page == "📊 Doanh thu":
