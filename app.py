@@ -73,12 +73,11 @@ def init_db():
         )
     """)
 
-    # --- TỰ ĐỘNG MIGRATION (CẬP NHẬT CỘT CHO DATABASE CŨ) ---
+    # --- 1. TỰ ĐỘNG MIGRATION CHO BẢNG INVOICES ---
     cur.execute("PRAGMA table_info(invoices)")
-    columns = [column[1] for column in cur.fetchall()]
+    inv_cols = [col[1] for col in cur.fetchall()]
     
-    # Kiểm tra và tự động thêm các cột bị thiếu trong DB cũ
-    required_columns = {
+    req_inv_cols = {
         "customer": "TEXT",
         "subtotal": "REAL",
         "discount": "REAL",
@@ -90,11 +89,28 @@ def init_db():
         "change_money": "REAL"
     }
 
-    for col, col_type in required_columns.items():
-        if col not in columns:
+    for col, col_type in req_inv_cols.items():
+        if col not in inv_cols:
             cur.execute(f"ALTER TABLE invoices ADD COLUMN {col} {col_type}")
 
-    # Menu mẫu - chỉ tạo nếu database chưa có món
+    # --- 2. TỰ ĐỘNG MIGRATION CHO BẢNG INVOICE_ITEMS ---
+    cur.execute("PRAGMA table_info(invoice_items)")
+    item_cols = [col[1] for col in cur.fetchall()]
+
+    req_item_cols = {
+        "invoice_id": "INTEGER",
+        "menu_id": "INTEGER",
+        "item_name": "TEXT",
+        "quantity": "INTEGER",
+        "unit_price": "REAL",
+        "amount": "REAL"
+    }
+
+    for col, col_type in req_item_cols.items():
+        if col not in item_cols:
+            cur.execute(f"ALTER TABLE invoice_items ADD COLUMN {col} {col_type}")
+
+    # Menu mẫu - chỉ khởi tạo nếu menu trống
     cur.execute("SELECT COUNT(*) FROM menu")
     if cur.fetchone()[0] == 0:
         sample = [
@@ -310,7 +326,7 @@ if page == "🧾 Bán hàng":
 
     st.divider()
 
-    st.markdown("### 🍽️️ MENU MÓN ĂN")
+    st.markdown("### 🍽 MENU MÓN ĂN")
 
     menu = get_menu()
 
@@ -376,7 +392,7 @@ if page == "🧾 Bán hàng":
             if st.button(
                 "➕ THÊM MÓN VÀO HÓA ĐƠN",
                 type="primary",
-                use_container_width=True
+                width="stretch"
             ):
                 add_item(selected_item, quantity)
                 st.success(
@@ -499,7 +515,7 @@ if page == "🧾 Bán hàng":
             if st.button(
                 "💾 THANH TOÁN & LƯU HÓA ĐƠN",
                 type="primary",
-                use_container_width=True
+                width="stretch"
             ):
 
                 if not table.strip():
@@ -546,7 +562,7 @@ if page == "🧾 Bán hàng":
         with b2:
             if st.button(
                 "🗑️ XÓA BILL",
-                use_container_width=True
+                width="stretch"
             ):
                 st.session_state.cart = []
                 st.rerun()
@@ -642,7 +658,7 @@ elif page == "🍽️ Quản lý món":
                         "unit": "Đơn vị"
                     }
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
 
@@ -674,7 +690,7 @@ elif page == "🍽️ Quản lý món":
                 if st.button(
                     "💾 LƯU THAY ĐỔI",
                     type="primary",
-                    use_container_width=True
+                    width="stretch"
                 ):
                     conn = connect_db()
                     conn.execute(
@@ -696,7 +712,7 @@ elif page == "🍽️ Quản lý món":
                     "⛔ NGỪNG BÁN" if selected["active"] else "✅ BÁN LẠI"
                 )
 
-                if st.button(text, use_container_width=True):
+                if st.button(text, width="stretch"):
                     new_status = 0 if selected["active"] else 1
                     conn = connect_db()
                     conn.execute(
@@ -774,7 +790,7 @@ elif page == "📜 Hóa đơn":
                     "created_at": "Thời gian"
                 }
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -840,6 +856,6 @@ elif page == "📊 Doanh thu":
 
         st.dataframe(
             daily[["Ngày", "Doanh thu"]],
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
