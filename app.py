@@ -1,8 +1,8 @@
-import streamlit as st
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
+import streamlit as st
 
 # =========================================================
 # NHÀ HÀNG CỎ BỐN LÁ - APP GỌI MÓN & HÓA ĐƠN
@@ -289,10 +289,7 @@ if page == "🧾 Bán hàng":
 
     st.divider()
 
-    # =====================================================
-    # MENU CHỮ - NHÂN VIÊN KHÔNG NHẬP TÊN MÓN
-    # =====================================================
-
+    # MENU CHỮ
     st.markdown("### 🍽️ MENU MÓN ĂN")
 
     menu = get_menu()
@@ -300,7 +297,6 @@ if page == "🧾 Bán hàng":
     if not menu:
         st.warning("Chưa có món ăn. Hãy vào Quản lý món để thêm món.")
     else:
-
         categories = ["Tất cả"] + sorted(
             list(set(item["category"] for item in menu))
         )
@@ -318,7 +314,6 @@ if page == "🧾 Bán hàng":
                 if item["category"] == category
             ]
 
-        # CHỌN MÓN BẰNG TÊN CÓ SẴN
         menu_names = [
             f'{item["name"]} — {money(item["price"])} / {item["unit"]}'
             for item in menu_show
@@ -371,10 +366,7 @@ if page == "🧾 Bán hàng":
 
     st.divider()
 
-    # =====================================================
     # GIỎ HÀNG
-    # =====================================================
-
     st.markdown("### 🛒 MÓN ĐÃ CHỌN")
 
     if not st.session_state.cart:
@@ -384,7 +376,6 @@ if page == "🧾 Bán hàng":
         )
 
     else:
-
         for i, item in enumerate(st.session_state.cart):
 
             c1, c2, c3, c4, c5 = st.columns(
@@ -445,21 +436,18 @@ if page == "🧾 Bán hàng":
         total = max(subtotal - discount + service + vat, 0)
 
         with c2:
-
             payment = st.selectbox(
                 "💳 Phương thức thanh toán",
                 ["Tiền mặt", "Chuyển khoản", "Thẻ"]
             )
 
             if payment == "Tiền mặt":
-
                 received = st.number_input(
                     "💵 Tiền khách đưa",
                     min_value=0.0,
                     value=float(total),
                     step=1000.0
                 )
-
             else:
                 received = total
                 st.write(f"Khách thanh toán: **{money(total)}**")
@@ -502,11 +490,9 @@ if page == "🧾 Bán hàng":
                 elif payment == "Tiền mặt" and received < total:
                     st.error("Tiền khách đưa chưa đủ.")
                 else:
-
                     code = invoice_code()
-                    now = datetime.now().strftime(
-                        "%d/%m/%Y %H:%M:%S"
-                    )
+                    # Chuẩn hóa thời gian ISO YYYY-MM-DD HH:MM:SS để hỗ trợ truy vấn SQL BETWEEN
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                     info = {
                         "invoice_code": code,
@@ -560,11 +546,8 @@ elif page == "🍽️ Quản lý món":
     )
 
     with tab1:
-
         with st.form("add_food"):
-
             name = st.text_input("Tên món")
-
             category = st.selectbox(
                 "Danh mục",
                 [
@@ -576,13 +559,11 @@ elif page == "🍽️ Quản lý món":
                     "Khác"
                 ]
             )
-
             price = st.number_input(
                 "Giá bán (VNĐ)",
                 min_value=0.0,
                 step=1000.0
             )
-
             unit = st.selectbox(
                 "Đơn vị",
                 ["Phần", "Nồi", "Đĩa", "Ly", "Lon", "Chai", "Cái"]
@@ -592,55 +573,35 @@ elif page == "🍽️ Quản lý món":
                 "➕ THÊM MÓN",
                 type="primary"
             ):
-
                 if not name.strip():
                     st.error("Vui lòng nhập tên món.")
                 elif price <= 0:
                     st.error("Vui lòng nhập giá bán.")
                 else:
-
                     conn = connect_db()
-
                     conn.execute(
                         """
                         INSERT INTO menu(name, category, price, unit, active)
                         VALUES (?, ?, ?, ?, 1)
                         """,
-                        (
-                            name.strip(),
-                            category,
-                            price,
-                            unit
-                        )
+                        (name.strip(), category, price, unit)
                     )
-
                     conn.commit()
                     conn.close()
 
-                    st.success(
-                        f"Đã thêm món: {name}"
-                    )
-
+                    st.success(f"Đã thêm món: {name}")
                     st.rerun()
 
     with tab2:
-
         conn = connect_db()
-
         foods = conn.execute(
             "SELECT * FROM menu ORDER BY category, name"
         ).fetchall()
-
         conn.close()
 
         if foods:
-
-            df = pd.DataFrame(
-                [dict(x) for x in foods]
-            )
-
+            df = pd.DataFrame([dict(x) for x in foods])
             df["Giá"] = df["price"].apply(money)
-
             df["Trạng thái"] = df["active"].map(
                 {1: "Đang bán", 0: "Ngừng bán"}
             )
@@ -673,22 +634,15 @@ elif page == "🍽️ Quản lý món":
                 "Chọn món cần chỉnh sửa",
                 food_ids,
                 format_func=lambda x: next(
-                    y["name"]
-                    for y in foods
-                    if y["id"] == x
+                    y["name"] for y in foods if y["id"] == x
                 )
             )
 
             selected = next(
-                x for x in foods
-                if x["id"] == selected_id
+                x for x in foods if x["id"] == selected_id
             )
 
-            new_name = st.text_input(
-                "Tên món",
-                value=selected["name"]
-            )
-
+            new_name = st.text_input("Tên món", value=selected["name"])
             new_price = st.number_input(
                 "Giá bán",
                 min_value=0.0,
@@ -704,22 +658,15 @@ elif page == "🍽️ Quản lý món":
                     type="primary",
                     use_container_width=True
                 ):
-
                     conn = connect_db()
-
                     conn.execute(
                         """
                         UPDATE menu
                         SET name = ?, price = ?
                         WHERE id = ?
                         """,
-                        (
-                            new_name,
-                            new_price,
-                            selected_id
-                        )
+                        (new_name, new_price, selected_id)
                     )
-
                     conn.commit()
                     conn.close()
 
@@ -727,39 +674,23 @@ elif page == "🍽️ Quản lý món":
                     st.rerun()
 
             with b2:
-
                 text = (
-                    "⛔ NGỪNG BÁN"
-                    if selected["active"]
-                    else "✅ BÁN LẠI"
+                    "⛔ NGỪNG BÁN" if selected["active"] else "✅ BÁN LẠI"
                 )
 
-                if st.button(
-                    text,
-                    use_container_width=True
-                ):
-
-                    new_status = (
-                        0 if selected["active"] else 1
-                    )
-
+                if st.button(text, use_container_width=True):
+                    new_status = 0 if selected["active"] else 1
                     conn = connect_db()
-
                     conn.execute(
                         """
                         UPDATE menu
                         SET active = ?
                         WHERE id = ?
                         """,
-                        (
-                            new_status,
-                            selected_id
-                        )
+                        (new_status, selected_id)
                     )
-
                     conn.commit()
                     conn.close()
-
                     st.rerun()
 
 # =========================================================
@@ -778,7 +709,6 @@ elif page == "📜 Hóa đơn":
     conn = connect_db()
 
     if search.strip():
-
         invoices = conn.execute(
             """
             SELECT *
@@ -788,15 +718,9 @@ elif page == "📜 Hóa đơn":
                OR employee LIKE ?
             ORDER BY id DESC
             """,
-            (
-                f"%{search}%",
-                f"%{search}%",
-                f"%{search}%"
-            )
+            (f"%{search}%", f"%{search}%", f"%{search}%")
         ).fetchall()
-
     else:
-
         invoices = conn.execute(
             """
             SELECT *
@@ -808,15 +732,9 @@ elif page == "📜 Hóa đơn":
     conn.close()
 
     if not invoices:
-
         st.info("Chưa có hóa đơn.")
-
     else:
-
-        df = pd.DataFrame(
-            [dict(x) for x in invoices]
-        )
-
+        df = pd.DataFrame([dict(x) for x in invoices])
         df["Tổng tiền"] = df["total"].apply(money)
 
         st.dataframe(
@@ -853,16 +771,10 @@ elif page == "📊 Doanh thu":
     c1, c2 = st.columns(2)
 
     with c1:
-        date_from = st.date_input(
-            "Từ ngày",
-            datetime.now().date()
-        )
+        date_from = st.date_input("Từ ngày", datetime.now().date())
 
     with c2:
-        date_to = st.date_input(
-            "Đến ngày",
-            datetime.now().date()
-        )
+        date_to = st.date_input("Đến ngày", datetime.now().date())
 
     start = str(date_from) + " 00:00:00"
     end = str(date_to) + " 23:59:59"
@@ -882,14 +794,9 @@ elif page == "📊 Doanh thu":
     conn.close()
 
     if not invoices:
-
         st.info("Không có dữ liệu trong khoảng thời gian này.")
-
     else:
-
-        df = pd.DataFrame(
-            [dict(x) for x in invoices]
-        )
+        df = pd.DataFrame([dict(x) for x in invoices])
 
         total_revenue = df["total"].sum()
         count = len(df)
@@ -897,26 +804,13 @@ elif page == "📊 Doanh thu":
 
         c1, c2, c3 = st.columns(3)
 
-        c1.metric(
-            "💰 Tổng doanh thu",
-            money(total_revenue)
-        )
-
-        c2.metric(
-            "🧾 Số hóa đơn",
-            count
-        )
-
-        c3.metric(
-            "📈 Trung bình / hóa đơn",
-            money(average)
-        )
+        c1.metric("💰 Tổng doanh thu", money(total_revenue))
+        c2.metric("🧾 Số hóa đơn", count)
+        c3.metric("📈 Trung bình / hóa đơn", money(average))
 
         st.divider()
 
-        df["Ngày"] = pd.to_datetime(
-            df["created_at"]
-        ).dt.date
+        df["Ngày"] = pd.to_datetime(df["created_at"]).dt.date
 
         daily = (
             df.groupby("Ngày")["total"]
@@ -927,9 +821,7 @@ elif page == "📊 Doanh thu":
         daily["Doanh thu"] = daily["total"].apply(money)
 
         st.dataframe(
-            daily[
-                ["Ngày", "Doanh thu"]
-            ],
+            daily[["Ngày", "Doanh thu"]],
             use_container_width=True,
             hide_index=True
         )
