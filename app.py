@@ -1,1208 +1,935 @@
 import streamlit as st
 import sqlite3
-import pandas as pd
 from datetime import datetime
-import os
+from pathlib import Path
+import pandas as pd
 
-# ============================================================
-# 1. CẤU HÌNH ỨNG DỤNG
-# ============================================================
+# =========================================================
+# NHÀ HÀNG CỎ BỐN LÁ - APP GỌI MÓN & HÓA ĐƠN
+# =========================================================
 
 st.set_page_config(
     page_title="Nhà Hàng Cỏ Bốn Lá",
     page_icon="🍀",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-DB_FILE = "co_bon_la.db"
+DB = "co_bon_la.db"
+LOGO = "Logo1.JPG"
 
+# =========================================================
+# DATABASE
+# =========================================================
 
-# ============================================================
-# 2. DATABASE
-# ============================================================
-
-def get_connection():
-    conn = sqlite3.connect(DB_FILE)
+def connect_db():
+    conn = sqlite3.connect(DB, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def init_database():
-    conn = get_connection()
-    cursor = conn.cursor()
+def init_db():
+    conn = connect_db()
+    cur = conn.cursor()
 
-    # Bảng hóa đơn
-    cursor.execute("""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS menu (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            price REAL NOT NULL,
+            unit TEXT NOT NULL,
+            active INTEGER DEFAULT 1
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS invoices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            invoice_code TEXT UNIQUE NOT NULL,
+            invoice_code TEXT UNIQUE,
             table_number TEXT,
-            customer_name TEXT,
             employee TEXT,
-            created_at TEXT,
-            subtotal REAL DEFAULT 0,
-            discount REAL DEFAULT 0,
-            service_charge REAL DEFAULT 0,
-            vat REAL DEFAULT 0,
-            total REAL DEFAULT 0,
+            customer TEXT,
+            subtotal REAL,
+            discount REAL,
+            service_charge REAL,
+            vat REAL,
+            total REAL,
             payment_method TEXT,
-            money_received REAL DEFAULT 0,
-            change_amount REAL DEFAULT 0
+            received REAL,
+            change_money REAL,
+            created_at TEXT
         )
     """)
 
-    # Bảng chi tiết hóa đơn
-    cursor.execute("""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS invoice_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            invoice_id INTEGER NOT NULL,
-            item_name TEXT NOT NULL,
-            quantity INTEGER NOT NULL,
-            price REAL NOT NULL,
-            amount REAL NOT NULL,
-            FOREIGN KEY (invoice_id)
-                REFERENCES invoices(id)
-                ON DELETE CASCADE
+            invoice_id INTEGER,
+            menu_id INTEGER,
+            item_name TEXT,
+            quantity INTEGER,
+            unit_price REAL,
+            amount REAL
         )
     """)
+
+    # Menu mẫu - chỉ tạo nếu database chưa có món
+    cur.execute("SELECT COUNT(*) FROM menu")
+    if cur.fetchone()[0] == 0:
+        sample = [
+            ("Gỏi cuốn", "Khai vị", 45000, "Phần"),
+            ("Khoai tây chiên", "Khai vị", 35000, "Phần"),
+            ("Cơm chiên Dương Châu", "Món chính", 65000, "Phần"),
+            ("Gà nướng", "Món chính", 180000, "Phần"),
+            ("Bò lúc lắc", "Món chính", 145000, "Phần"),
+            ("Lẩu Thái", "Món chính", 250000, "Nồi"),
+            ("Mì xào bò", "Món chính", 75000, "Phần"),
+            ("Rau xào", "Món phụ", 45000, "Phần"),
+            ("Coca-Cola", "Nước uống", 15000, "Lon"),
+            ("Pepsi", "Nước uống", 15000, "Lon"),
+            ("Nước suối", "Nước uống", 10000, "Chai"),
+            ("Trà đào", "Nước uống", 30000, "Ly"),
+            ("Trà tắc", "Nước uống", 25000, "Ly"),
+            ("Cà phê", "Nước uống", 30000, "Ly"),
+            ("Chè khúc bạch", "Tráng miệng", 35000, "Phần"),
+            ("Trái cây", "Tráng miệng", 40000, "Phần"),
+        ]
+
+        cur.executemany(
+            "INSERT INTO menu(name, category, price, unit) VALUES (?, ?, ?, ?)",
+            sample
+        )
 
     conn.commit()
     conn.close()
 
 
-init_database()
+def money(number):
+    return f"{number:,.0f} đ".replace(",", ".")
 
 
-# ============================================================
-# 3. HÀM HỖ TRỢ
-# ============================================================
-
-def format_money(value):
-    return f"{value:,.0f} VNĐ"
-
-
-def generate_invoice_code():
-    now = datetime.now()
-    prefix = "HD" + now.strftime("%Y%m%d%H%M%S")
-
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        SELECT COUNT(*)
-        FROM invoices
-        WHERE invoice_code LIKE ?
-        """,
-        (prefix + "%",)
-    )
-
-    count = cursor.fetchone()[0]
-
+def get_menu():
+    conn = connect_db()
+    rows = conn.execute("""
+        SELECT * FROM menu
+        WHERE active = 1
+        ORDER BY category, name
+    """).fetchall()
     conn.close()
+    return [dict(x) for x in rows]
 
-    return f"{prefix}{count + 1:02d}"
+
+def invoice_code():
+    return "CBL-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:20]
 
 
-def save_invoice(
-    invoice_code,
-    table_number,
-    customer_name,
-    employee,
-    created_at,
-    subtotal,
-    discount,
-    service_charge,
-    vat,
-    total,
-    payment_method,
-    money_received,
-    change_amount,
-    items
-):
+def save_invoice(info, cart):
+    conn = connect_db()
+    cur = conn.cursor()
 
-    conn = get_connection()
-    cursor = conn.cursor()
+    cur.execute("""
+        INSERT INTO invoices (
+            invoice_code, table_number, employee, customer,
+            subtotal, discount, service_charge, vat, total,
+            payment_method, received, change_money, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        info["invoice_code"],
+        info["table"],
+        info["employee"],
+        info["customer"],
+        info["subtotal"],
+        info["discount"],
+        info["service"],
+        info["vat"],
+        info["total"],
+        info["payment"],
+        info["received"],
+        info["change"],
+        info["created_at"]
+    ))
 
-    try:
+    invoice_id = cur.lastrowid
 
-        # Lưu hóa đơn chính
-        cursor.execute("""
-            INSERT INTO invoices (
-                invoice_code,
-                table_number,
-                customer_name,
-                employee,
-                created_at,
-                subtotal,
-                discount,
-                service_charge,
-                vat,
-                total,
-                payment_method,
-                money_received,
-                change_amount
+    for item in cart:
+        cur.execute("""
+            INSERT INTO invoice_items (
+                invoice_id, menu_id, item_name,
+                quantity, unit_price, amount
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
         """, (
-            invoice_code,
-            table_number,
-            customer_name,
-            employee,
-            created_at,
-            subtotal,
-            discount,
-            service_charge,
-            vat,
-            total,
-            payment_method,
-            money_received,
-            change_amount
+            invoice_id,
+            item["id"],
+            item["name"],
+            item["quantity"],
+            item["price"],
+            item["amount"]
         ))
 
-        invoice_id = cursor.lastrowid
-
-        # Lưu từng món
-        for item in items:
-
-            cursor.execute("""
-                INSERT INTO invoice_items (
-                    invoice_id,
-                    item_name,
-                    quantity,
-                    price,
-                    amount
-                )
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                invoice_id,
-                item["Tên món"],
-                item["Số lượng"],
-                item["Đơn giá"],
-                item["Thành tiền"]
-            ))
-
-        conn.commit()
-
-        return True, invoice_id
-
-    except Exception as error:
-
-        conn.rollback()
-
-        return False, str(error)
-
-    finally:
-
-        conn.close()
-
-
-def get_all_invoices(search_text=""):
-
-    conn = get_connection()
-
-    if search_text.strip():
-
-        keyword = f"%{search_text.strip()}%"
-
-        query = """
-            SELECT *
-            FROM invoices
-            WHERE invoice_code LIKE ?
-               OR table_number LIKE ?
-               OR customer_name LIKE ?
-               OR employee LIKE ?
-            ORDER BY id DESC
-        """
-
-        df = pd.read_sql_query(
-            query,
-            conn,
-            params=(
-                keyword,
-                keyword,
-                keyword,
-                keyword
-            )
-        )
-
-    else:
-
-        df = pd.read_sql_query(
-            """
-            SELECT *
-            FROM invoices
-            ORDER BY id DESC
-            """,
-            conn
-        )
-
+    conn.commit()
     conn.close()
 
-    return df
 
+init_db()
 
-def get_invoice(invoice_id):
-
-    conn = get_connection()
-
-    invoice = pd.read_sql_query(
-        """
-        SELECT *
-        FROM invoices
-        WHERE id = ?
-        """,
-        conn,
-        params=(invoice_id,)
-    )
-
-    items = pd.read_sql_query(
-        """
-        SELECT
-            item_name AS 'Tên món',
-            quantity AS 'Số lượng',
-            price AS 'Đơn giá',
-            amount AS 'Thành tiền'
-        FROM invoice_items
-        WHERE invoice_id = ?
-        """,
-        conn,
-        params=(invoice_id,)
-    )
-
-    conn.close()
-
-    return invoice, items
-
-
-# ============================================================
-# 4. CSS
-# ============================================================
-
-st.markdown("""
-<style>
-
-.main-title {
-    text-align: center;
-    font-size: 34px;
-    font-weight: 800;
-    margin-top: 5px;
-}
-
-.sub-title {
-    text-align: center;
-    color: #666;
-    font-size: 17px;
-    margin-bottom: 15px;
-}
-
-.total-card {
-    border: 1px solid #dddddd;
-    border-radius: 12px;
-    padding: 20px;
-    text-align: center;
-    background-color: #fafafa;
-}
-
-.total-number {
-    font-size: 28px;
-    font-weight: 800;
-}
-
-.invoice-header {
-    text-align: center;
-    font-size: 25px;
-    font-weight: bold;
-}
-
-.success-box {
-    padding: 15px;
-    border-radius: 10px;
-    border: 1px solid #b7dfc0;
-    background-color: #f0fff4;
-}
-
-</style>
-""", unsafe_allow_html=True)
-
-
-# ============================================================
-# 5. SESSION STATE
-# ============================================================
+# =========================================================
+# SESSION
+# =========================================================
 
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
-if "invoice_code" not in st.session_state:
-    st.session_state.invoice_code = generate_invoice_code()
+if "last_invoice" not in st.session_state:
+    st.session_state.last_invoice = None
 
 
-# ============================================================
-# 6. SIDEBAR
-# ============================================================
+def add_item(item, quantity):
+    for x in st.session_state.cart:
+        if x["id"] == item["id"]:
+            x["quantity"] += quantity
+            x["amount"] = x["quantity"] * x["price"]
+            return
 
-with st.sidebar:
+    st.session_state.cart.append({
+        "id": item["id"],
+        "name": item["name"],
+        "price": item["price"],
+        "unit": item["unit"],
+        "quantity": quantity,
+        "amount": item["price"] * quantity
+    })
 
-    # Logo
-    if os.path.exists("Logo1.JPG"):
-        st.image(
-            "Logo1.JPG",
-            use_container_width=True
-        )
 
+# =========================================================
+# GIAO DIỆN
+# =========================================================
+
+st.markdown("""
+<style>
+.title {
+    font-size: 34px;
+    font-weight: 800;
+    color: #166534;
+}
+.menu-box {
+    border: 1px solid #d1d5db;
+    border-radius: 12px;
+    padding: 12px;
+    background: #ffffff;
+}
+.total-box {
+    padding: 18px;
+    border-radius: 14px;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# HEADER
+h1, h2 = st.columns([1, 6])
+
+with h1:
+    if Path(LOGO).exists():
+        st.image(LOGO, width=100)
+    else:
+        st.write("🍀")
+
+with h2:
     st.markdown(
-        "## 🍀 Nhà Hàng Cỏ Bốn Lá"
+        '<div class="title">NHÀ HÀNG CỎ BỐN LÁ</div>',
+        unsafe_allow_html=True
     )
+    st.caption("Hệ thống gọi món và quản lý hóa đơn")
 
-    st.divider()
+st.divider()
 
-    menu_page = st.radio(
-        "📌 Chức năng",
-        [
-            "🧾 Bán hàng",
-            "📋 Lịch sử hóa đơn",
-            "📊 Doanh thu"
-        ]
-    )
+# =========================================================
+# SIDEBAR
+# =========================================================
 
-    st.divider()
+st.sidebar.title("🍀 CỎ BỐN LÁ")
 
-    st.markdown("### 👨‍🍳 Nhân viên")
+page = st.sidebar.radio(
+    "MENU HỆ THỐNG",
+    [
+        "🧾 Bán hàng",
+        "🍽️ Quản lý món",
+        "📜 Hóa đơn",
+        "📊 Doanh thu"
+    ]
+)
 
-    employee = st.selectbox(
-        "Nhân viên đang sử dụng",
-        [
-            "Nhân viên 01",
-            "Nhân viên 02",
-            "Nhân viên 03",
-            "Thu ngân",
-            "Quản lý"
-        ]
-    )
+# =========================================================
+# 1. BÁN HÀNG
+# =========================================================
 
+if page == "🧾 Bán hàng":
 
-# ============================================================
-# 7. TRANG BÁN HÀNG
-# ============================================================
+    st.subheader("🧾 TẠO HÓA ĐƠN")
 
-if menu_page == "🧾 Bán hàng":
+    c1, c2, c3 = st.columns(3)
 
-    # --------------------------------------------------------
-    # HEADER
-    # --------------------------------------------------------
+    with c1:
+        table = st.text_input("🪑 Bàn số", placeholder="Ví dụ: Bàn 05")
 
-    col_logo, col_title = st.columns([1, 4])
-
-    with col_logo:
-
-        if os.path.exists("Logo1.JPG"):
-            st.image(
-                "Logo1.JPG",
-                width=130
-            )
-
-    with col_title:
-
-        st.markdown(
-            '<div class="main-title">'
-            'NHÀ HÀNG CỎ BỐN LÁ'
-            '</div>',
-            unsafe_allow_html=True
+    with c2:
+        employee = st.text_input(
+            "👨‍💼 Nhân viên",
+            placeholder="Nhập tên nhân viên"
         )
 
-        st.markdown(
-            '<div class="sub-title">'
-            'Hệ thống quản lý bán hàng & hóa đơn'
-            '</div>',
-            unsafe_allow_html=True
+    with c3:
+        customer = st.text_input(
+            "👤 Tên khách hàng",
+            placeholder="Không bắt buộc"
         )
 
     st.divider()
 
-    # --------------------------------------------------------
-    # THÔNG TIN HÓA ĐƠN
-    # --------------------------------------------------------
+    # =====================================================
+    # MENU CHỮ - NHÂN VIÊN KHÔNG NHẬP TÊN MÓN
+    # =====================================================
 
-    st.subheader("🧾 Thông tin hóa đơn")
+    st.markdown("### 🍽️ MENU MÓN ĂN")
 
-    col1, col2, col3, col4 = st.columns(4)
+    menu = get_menu()
 
-    with col1:
+    if not menu:
+        st.warning("Chưa có món ăn. Hãy vào Quản lý món để thêm món.")
+    else:
 
-        table_number = st.text_input(
-            "🪑 Số bàn",
-            placeholder="Ví dụ: 01"
+        categories = ["Tất cả"] + sorted(
+            list(set(item["category"] for item in menu))
         )
 
-    with col2:
-
-        customer_name = st.text_input(
-            "👤 Khách hàng",
-            value="Khách lẻ"
+        category = st.selectbox(
+            "Chọn nhóm món",
+            categories
         )
 
-    with col3:
-
-        st.text_input(
-            "🧾 Mã hóa đơn",
-            value=st.session_state.invoice_code,
-            disabled=True
-        )
-
-    with col4:
-
-        current_time = datetime.now().strftime(
-            "%d/%m/%Y %H:%M:%S"
-        )
-
-        st.text_input(
-            "🕐 Thời gian",
-            value=current_time,
-            disabled=True
-        )
-
-    st.divider()
-
-    # --------------------------------------------------------
-    # THÊM MÓN
-    # --------------------------------------------------------
-
-    st.subheader("🍜 Thêm món")
-
-    col1, col2, col3, col4 = st.columns(
-        [4, 1, 2, 1]
-    )
-
-    with col1:
-
-        item_name = st.text_input(
-            "Tên món",
-            placeholder="Nhập tên món..."
-        )
-
-    with col2:
-
-        quantity = st.number_input(
-            "SL",
-            min_value=1,
-            value=1,
-            step=1
-        )
-
-    with col3:
-
-        price = st.number_input(
-            "Đơn giá",
-            min_value=0,
-            value=0,
-            step=1000
-        )
-
-    with col4:
-
-        st.write("")
-
-        add_button = st.button(
-            "➕ Thêm món",
-            use_container_width=True
-        )
-
-    if add_button:
-
-        if not item_name.strip():
-
-            st.warning(
-                "⚠️ Vui lòng nhập tên món."
-            )
-
-        elif price <= 0:
-
-            st.warning(
-                "⚠️ Vui lòng nhập đơn giá."
-            )
-
+        if category == "Tất cả":
+            menu_show = menu
         else:
+            menu_show = [
+                item for item in menu
+                if item["category"] == category
+            ]
 
-            amount = quantity * price
+        # CHỌN MÓN BẰNG TÊN CÓ SẴN
+        menu_names = [
+            f'{item["name"]} — {money(item["price"])} / {item["unit"]}'
+            for item in menu_show
+        ]
 
-            st.session_state.cart.append({
-                "Tên món": item_name.strip(),
-                "Số lượng": quantity,
-                "Đơn giá": price,
-                "Thành tiền": amount
-            })
+        selected_text = st.selectbox(
+            "🍴 Chọn món",
+            menu_names,
+            index=0
+        )
 
-            st.success(
-                f"✅ Đã thêm: {item_name}"
+        selected_index = menu_names.index(selected_text)
+        selected_item = menu_show[selected_index]
+
+        c1, c2, c3 = st.columns([3, 1, 2])
+
+        with c1:
+            st.markdown(
+                f"""
+                <div class="menu-box">
+                <b>{selected_item["name"]}</b><br>
+                Danh mục: {selected_item["category"]}<br>
+                Giá: <b>{money(selected_item["price"])}</b> / {selected_item["unit"]}
+                </div>
+                """,
+                unsafe_allow_html=True
             )
 
-            st.rerun()
+        with c2:
+            quantity = st.number_input(
+                "Số lượng",
+                min_value=1,
+                value=1,
+                step=1
+            )
 
-    # --------------------------------------------------------
-    # GIỎ HÀNG
-    # --------------------------------------------------------
-
-    st.subheader("🛒 Danh sách món")
-
-    if len(st.session_state.cart) > 0:
-
-        cart_df = pd.DataFrame(
-            st.session_state.cart
-        )
-
-        st.dataframe(
-            cart_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Đơn giá": st.column_config.NumberColumn(
-                    "Đơn giá",
-                    format="%,d VNĐ"
-                ),
-                "Thành tiền": st.column_config.NumberColumn(
-                    "Thành tiền",
-                    format="%,d VNĐ"
+        with c3:
+            st.write("")
+            st.write("")
+            if st.button(
+                "➕ THÊM MÓN VÀO HÓA ĐƠN",
+                type="primary",
+                use_container_width=True
+            ):
+                add_item(selected_item, quantity)
+                st.success(
+                    f'Đã thêm {quantity} {selected_item["unit"]}: '
+                    f'{selected_item["name"]}'
                 )
-            }
+
+    st.divider()
+
+    # =====================================================
+    # GIỎ HÀNG
+    # =====================================================
+
+    st.markdown("### 🛒 MÓN ĐÃ CHỌN")
+
+    if not st.session_state.cart:
+        st.info(
+            "Chưa có món. Nhân viên chỉ cần chọn món trong MENU phía trên, "
+            "không cần tự nhập tên món."
         )
-
-        if st.button(
-            "🗑️ Xóa toàn bộ món",
-            use_container_width=False
-        ):
-
-            st.session_state.cart = []
-
-            st.rerun()
 
     else:
 
-        st.info(
-            "Chưa có món nào trong hóa đơn."
-        )
+        for i, item in enumerate(st.session_state.cart):
 
-    # --------------------------------------------------------
-    # TÍNH TIỀN
-    # --------------------------------------------------------
-
-    subtotal = sum(
-        item["Thành tiền"]
-        for item in st.session_state.cart
-    )
-
-    st.divider()
-
-    st.subheader("💰 Tính tiền")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-
-        discount_percent = st.number_input(
-            "🎁 Giảm giá (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=0.0,
-            step=1.0
-        )
-
-    with col2:
-
-        service_percent = st.number_input(
-            "🍽️ Phí phục vụ (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=0.0,
-            step=1.0
-        )
-
-    with col3:
-
-        vat_percent = st.number_input(
-            "🧾 VAT (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=8.0,
-            step=1.0
-        )
-
-    discount = subtotal * discount_percent / 100
-
-    after_discount = subtotal - discount
-
-    service_charge = (
-        after_discount *
-        service_percent /
-        100
-    )
-
-    vat = (
-        after_discount *
-        vat_percent /
-        100
-    )
-
-    total = (
-        after_discount
-        + service_charge
-        + vat
-    )
-
-    # --------------------------------------------------------
-    # THANH TOÁN
-    # --------------------------------------------------------
-
-    st.subheader("💳 Thanh toán")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-
-        payment_method = st.selectbox(
-            "Phương thức thanh toán",
-            [
-                "Tiền mặt",
-                "Chuyển khoản",
-                "Thẻ ngân hàng"
-            ]
-        )
-
-    with col2:
-
-        money_received = st.number_input(
-            "💵 Tiền khách đưa",
-            min_value=0,
-            value=0,
-            step=10000
-        )
-
-    with col3:
-
-        change_amount = money_received - total
-
-        if change_amount >= 0:
-
-            st.metric(
-                "💰 Tiền thừa",
-                format_money(change_amount)
+            c1, c2, c3, c4, c5 = st.columns(
+                [3, 1, 1.5, 1.5, 0.6]
             )
 
-        else:
+            with c1:
+                st.write(f"**{item['name']}**")
 
-            st.metric(
-                "⚠️ Khách còn thiếu",
-                format_money(abs(change_amount))
+            with c2:
+                st.write(f"{item['quantity']} {item['unit']}")
+
+            with c3:
+                st.write(money(item["price"]))
+
+            with c4:
+                st.write(f"**{money(item['amount'])}**")
+
+            with c5:
+                if st.button("🗑️", key=f"delete_{i}"):
+                    st.session_state.cart.pop(i)
+                    st.rerun()
+
+        st.divider()
+
+        subtotal = sum(
+            item["amount"] for item in st.session_state.cart
+        )
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            discount = st.number_input(
+                "🏷️ Giảm giá (VNĐ)",
+                min_value=0.0,
+                value=0.0,
+                step=1000.0
             )
 
-    # --------------------------------------------------------
-    # TỔNG
-    # --------------------------------------------------------
+            service_percent = st.number_input(
+                "🍽️ Phí phục vụ (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=0.0,
+                step=1.0
+            )
 
-    st.divider()
+            vat_percent = st.number_input(
+                "🧾 VAT (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=0.0,
+                step=1.0
+            )
 
-    col1, col2 = st.columns(2)
+        service = max(subtotal - discount, 0) * service_percent / 100
+        vat = max(subtotal - discount + service, 0) * vat_percent / 100
+        total = max(subtotal - discount + service + vat, 0)
 
-    with col1:
+        with c2:
 
-        st.write(
-            f"**Tạm tính:** "
-            f"{format_money(subtotal)}"
-        )
+            payment = st.selectbox(
+                "💳 Phương thức thanh toán",
+                ["Tiền mặt", "Chuyển khoản", "Thẻ"]
+            )
 
-        st.write(
-            f"**Giảm giá:** "
-            f"-{format_money(discount)}"
-        )
+            if payment == "Tiền mặt":
 
-        st.write(
-            f"**Phí phục vụ:** "
-            f"{format_money(service_charge)}"
-        )
+                received = st.number_input(
+                    "💵 Tiền khách đưa",
+                    min_value=0.0,
+                    value=float(total),
+                    step=1000.0
+                )
 
-        st.write(
-            f"**VAT:** "
-            f"{format_money(vat)}"
-        )
+            else:
+                received = total
+                st.write(f"Khách thanh toán: **{money(total)}**")
 
-    with col2:
+            change = max(received - total, 0)
 
         st.markdown(
             f"""
-            <div class="total-card">
-
-            <div>TỔNG THANH TOÁN</div>
-
-            <div class="total-number">
-            {format_money(total)}
-            </div>
-
+            <div class="total-box">
+                Tiền hàng: <b>{money(subtotal)}</b><br>
+                Giảm giá: <b>- {money(discount)}</b><br>
+                Phí phục vụ: <b>{money(service)}</b><br>
+                VAT: <b>{money(vat)}</b><br>
+                <hr>
+                <b>TỔNG THANH TOÁN</b>
+                <div style="font-size:30px;color:#166534;font-weight:800">
+                    {money(total)}
+                </div>
+                Tiền thừa: <b>{money(change)}</b>
             </div>
             """,
             unsafe_allow_html=True
         )
 
-    st.divider()
+        st.write("")
 
-    # --------------------------------------------------------
-    # NÚT LƯU HÓA ĐƠN
-    # --------------------------------------------------------
+        b1, b2 = st.columns([3, 1])
 
-    save_button = st.button(
-        "💾 LƯU & HOÀN TẤT HÓA ĐƠN",
-        type="primary",
-        use_container_width=True
-    )
+        with b1:
+            if st.button(
+                "💾 THANH TOÁN & LƯU HÓA ĐƠN",
+                type="primary",
+                use_container_width=True
+            ):
 
-    if save_button:
+                if not table.strip():
+                    st.error("Vui lòng nhập số bàn.")
+                elif not employee.strip():
+                    st.error("Vui lòng nhập tên nhân viên.")
+                elif payment == "Tiền mặt" and received < total:
+                    st.error("Tiền khách đưa chưa đủ.")
+                else:
 
-        if not table_number.strip():
+                    code = invoice_code()
+                    now = datetime.now().strftime(
+                        "%d/%m/%Y %H:%M:%S"
+                    )
 
-            st.error(
-                "⚠️ Vui lòng nhập số bàn."
-            )
+                    info = {
+                        "invoice_code": code,
+                        "table": table,
+                        "employee": employee,
+                        "customer": customer,
+                        "subtotal": subtotal,
+                        "discount": discount,
+                        "service": service,
+                        "vat": vat,
+                        "total": total,
+                        "payment": payment,
+                        "received": received,
+                        "change": change,
+                        "created_at": now
+                    }
 
-        elif len(st.session_state.cart) == 0:
+                    save_invoice(
+                        info,
+                        st.session_state.cart
+                    )
 
-            st.error(
-                "⚠️ Hóa đơn chưa có món."
-            )
+                    st.session_state.last_invoice = info
+                    st.session_state.cart = []
 
-        elif money_received < total:
+                    st.success(
+                        f"✅ Lưu hóa đơn thành công: {code} | "
+                        f"Tổng: {money(total)}"
+                    )
 
-            st.error(
-                "⚠️ Tiền khách đưa chưa đủ."
-            )
+                    st.balloons()
 
-        else:
-
-            success, result = save_invoice(
-                invoice_code=st.session_state.invoice_code,
-                table_number=table_number,
-                customer_name=customer_name,
-                employee=employee,
-                created_at=current_time,
-                subtotal=subtotal,
-                discount=discount,
-                service_charge=service_charge,
-                vat=vat,
-                total=total,
-                payment_method=payment_method,
-                money_received=money_received,
-                change_amount=change_amount,
-                items=st.session_state.cart
-            )
-
-            if success:
-
-                st.success(
-                    f"✅ Đã lưu hóa đơn "
-                    f"{st.session_state.invoice_code}"
-                )
-
-                st.info(
-                    "Hóa đơn đã được lưu vào hệ thống."
-                )
-
-                # Xóa bill cũ
+        with b2:
+            if st.button(
+                "🗑️ XÓA BILL",
+                use_container_width=True
+            ):
                 st.session_state.cart = []
+                st.rerun()
 
-                # Tạo mã hóa đơn mới
-                st.session_state.invoice_code = (
-                    generate_invoice_code()
-                )
+# =========================================================
+# 2. QUẢN LÝ MÓN
+# =========================================================
 
-                st.balloons()
+elif page == "🍽️ Quản lý món":
 
-            else:
+    st.subheader("🍽️ QUẢN LÝ MENU MÓN ĂN")
 
-                st.error(
-                    f"❌ Không thể lưu hóa đơn: {result}"
-                )
-
-
-# ============================================================
-# 8. LỊCH SỬ HÓA ĐƠN
-# ============================================================
-
-elif menu_page == "📋 Lịch sử hóa đơn":
-
-    st.title("📋 Lịch sử hóa đơn")
-
-    st.write(
-        "Tất cả hóa đơn đã được lưu trong hệ thống."
+    tab1, tab2 = st.tabs(
+        ["➕ Thêm món", "📋 Danh sách món"]
     )
+
+    with tab1:
+
+        with st.form("add_food"):
+
+            name = st.text_input("Tên món")
+
+            category = st.selectbox(
+                "Danh mục",
+                [
+                    "Khai vị",
+                    "Món chính",
+                    "Món phụ",
+                    "Nước uống",
+                    "Tráng miệng",
+                    "Khác"
+                ]
+            )
+
+            price = st.number_input(
+                "Giá bán (VNĐ)",
+                min_value=0.0,
+                step=1000.0
+            )
+
+            unit = st.selectbox(
+                "Đơn vị",
+                ["Phần", "Nồi", "Đĩa", "Ly", "Lon", "Chai", "Cái"]
+            )
+
+            if st.form_submit_button(
+                "➕ THÊM MÓN",
+                type="primary"
+            ):
+
+                if not name.strip():
+                    st.error("Vui lòng nhập tên món.")
+                elif price <= 0:
+                    st.error("Vui lòng nhập giá bán.")
+                else:
+
+                    conn = connect_db()
+
+                    conn.execute(
+                        """
+                        INSERT INTO menu(name, category, price, unit, active)
+                        VALUES (?, ?, ?, ?, 1)
+                        """,
+                        (
+                            name.strip(),
+                            category,
+                            price,
+                            unit
+                        )
+                    )
+
+                    conn.commit()
+                    conn.close()
+
+                    st.success(
+                        f"Đã thêm món: {name}"
+                    )
+
+                    st.rerun()
+
+    with tab2:
+
+        conn = connect_db()
+
+        foods = conn.execute(
+            "SELECT * FROM menu ORDER BY category, name"
+        ).fetchall()
+
+        conn.close()
+
+        if foods:
+
+            df = pd.DataFrame(
+                [dict(x) for x in foods]
+            )
+
+            df["Giá"] = df["price"].apply(money)
+
+            df["Trạng thái"] = df["active"].map(
+                {1: "Đang bán", 0: "Ngừng bán"}
+            )
+
+            st.dataframe(
+                df[
+                    [
+                        "id",
+                        "name",
+                        "category",
+                        "Giá",
+                        "unit",
+                        "Trạng thái"
+                    ]
+                ].rename(
+                    columns={
+                        "id": "ID",
+                        "name": "Tên món",
+                        "category": "Danh mục",
+                        "unit": "Đơn vị"
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            food_ids = [x["id"] for x in foods]
+
+            selected_id = st.selectbox(
+                "Chọn món cần chỉnh sửa",
+                food_ids,
+                format_func=lambda x: next(
+                    y["name"]
+                    for y in foods
+                    if y["id"] == x
+                )
+            )
+
+            selected = next(
+                x for x in foods
+                if x["id"] == selected_id
+            )
+
+            new_name = st.text_input(
+                "Tên món",
+                value=selected["name"]
+            )
+
+            new_price = st.number_input(
+                "Giá bán",
+                min_value=0.0,
+                value=float(selected["price"]),
+                step=1000.0
+            )
+
+            b1, b2 = st.columns(2)
+
+            with b1:
+                if st.button(
+                    "💾 LƯU THAY ĐỔI",
+                    type="primary",
+                    use_container_width=True
+                ):
+
+                    conn = connect_db()
+
+                    conn.execute(
+                        """
+                        UPDATE menu
+                        SET name = ?, price = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            new_name,
+                            new_price,
+                            selected_id
+                        )
+                    )
+
+                    conn.commit()
+                    conn.close()
+
+                    st.success("Đã cập nhật món.")
+                    st.rerun()
+
+            with b2:
+
+                text = (
+                    "⛔ NGỪNG BÁN"
+                    if selected["active"]
+                    else "✅ BÁN LẠI"
+                )
+
+                if st.button(
+                    text,
+                    use_container_width=True
+                ):
+
+                    new_status = (
+                        0 if selected["active"] else 1
+                    )
+
+                    conn = connect_db()
+
+                    conn.execute(
+                        """
+                        UPDATE menu
+                        SET active = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            new_status,
+                            selected_id
+                        )
+                    )
+
+                    conn.commit()
+                    conn.close()
+
+                    st.rerun()
+
+# =========================================================
+# 3. HÓA ĐƠN
+# =========================================================
+
+elif page == "📜 Hóa đơn":
+
+    st.subheader("📜 LỊCH SỬ HÓA ĐƠN")
 
     search = st.text_input(
-        "🔎 Tìm kiếm",
-        placeholder=(
-            "Mã hóa đơn, số bàn, "
-            "khách hàng hoặc nhân viên..."
-        )
+        "🔎 Tìm hóa đơn",
+        placeholder="Nhập mã hóa đơn, bàn hoặc nhân viên"
     )
 
-    invoices = get_all_invoices(search)
+    conn = connect_db()
 
-    if invoices.empty:
+    if search.strip():
 
-        st.info(
-            "Chưa có hóa đơn nào."
-        )
+        invoices = conn.execute(
+            """
+            SELECT *
+            FROM invoices
+            WHERE invoice_code LIKE ?
+               OR table_number LIKE ?
+               OR employee LIKE ?
+            ORDER BY id DESC
+            """,
+            (
+                f"%{search}%",
+                f"%{search}%",
+                f"%{search}%"
+            )
+        ).fetchall()
 
     else:
 
-        total_invoices = len(invoices)
+        invoices = conn.execute(
+            """
+            SELECT *
+            FROM invoices
+            ORDER BY id DESC
+            """
+        ).fetchall()
 
-        total_revenue = invoices["total"].sum()
+    conn.close()
 
-        col1, col2 = st.columns(2)
+    if not invoices:
 
-        with col1:
+        st.info("Chưa có hóa đơn.")
 
-            st.metric(
-                "🧾 Số hóa đơn",
-                total_invoices
-            )
+    else:
 
-        with col2:
+        df = pd.DataFrame(
+            [dict(x) for x in invoices]
+        )
 
-            st.metric(
-                "💰 Tổng tiền",
-                format_money(total_revenue)
-            )
-
-        st.divider()
-
-        display_df = invoices[
-            [
-                "invoice_code",
-                "table_number",
-                "customer_name",
-                "employee",
-                "created_at",
-                "total",
-                "payment_method"
-            ]
-        ].copy()
-
-        display_df.columns = [
-            "Mã hóa đơn",
-            "Bàn",
-            "Khách hàng",
-            "Nhân viên",
-            "Thời gian",
-            "Tổng tiền",
-            "Thanh toán"
-        ]
-
-        display_df["Tổng tiền"] = display_df[
-            "Tổng tiền"
-        ].apply(format_money)
+        df["Tổng tiền"] = df["total"].apply(money)
 
         st.dataframe(
-            display_df,
+            df[
+                [
+                    "invoice_code",
+                    "table_number",
+                    "employee",
+                    "payment_method",
+                    "Tổng tiền",
+                    "created_at"
+                ]
+            ].rename(
+                columns={
+                    "invoice_code": "Mã HĐ",
+                    "table_number": "Bàn",
+                    "employee": "Nhân viên",
+                    "payment_method": "Thanh toán",
+                    "created_at": "Thời gian"
+                }
+            ),
             use_container_width=True,
             hide_index=True
         )
 
-        st.divider()
+# =========================================================
+# 4. DOANH THU
+# =========================================================
 
-        # ----------------------------------------------------
-        # XEM CHI TIẾT
-        # ----------------------------------------------------
+elif page == "📊 Doanh thu":
 
-        st.subheader("🔍 Xem chi tiết hóa đơn")
+    st.subheader("📊 DOANH THU")
 
-        invoice_choices = invoices[
-            ["id", "invoice_code"]
-        ].values.tolist()
+    c1, c2 = st.columns(2)
 
-        selected = st.selectbox(
-            "Chọn hóa đơn",
-            invoice_choices,
-            format_func=lambda x: x[1]
+    with c1:
+        date_from = st.date_input(
+            "Từ ngày",
+            datetime.now().date()
         )
 
-        if selected:
+    with c2:
+        date_to = st.date_input(
+            "Đến ngày",
+            datetime.now().date()
+        )
 
-            invoice_id = selected[0]
+    start = str(date_from) + " 00:00:00"
+    end = str(date_to) + " 23:59:59"
 
-            invoice, items = get_invoice(
-                invoice_id
-            )
+    conn = connect_db()
 
-            if not invoice.empty:
-
-                row = invoice.iloc[0]
-
-                st.markdown(
-                    f"""
-                    <div class="invoice-header">
-                    HÓA ĐƠN {row['invoice_code']}
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                col1, col2, col3, col4 = st.columns(4)
-
-                col1.metric(
-                    "🪑 Bàn",
-                    row["table_number"]
-                )
-
-                col2.metric(
-                    "👤 Khách",
-                    row["customer_name"]
-                )
-
-                col3.metric(
-                    "👨‍🍳 Nhân viên",
-                    row["employee"]
-                )
-
-                col4.metric(
-                    "💰 Tổng",
-                    format_money(row["total"])
-                )
-
-                st.write(
-                    f"**Thời gian:** {row['created_at']}"
-                )
-
-                st.write(
-                    f"**Phương thức:** "
-                    f"{row['payment_method']}"
-                )
-
-                st.subheader("🍜 Chi tiết món")
-
-                st.dataframe(
-                    items,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Đơn giá":
-                            st.column_config.NumberColumn(
-                                format="%,d VNĐ"
-                            ),
-                        "Thành tiền":
-                            st.column_config.NumberColumn(
-                                format="%,d VNĐ"
-                            )
-                    }
-                )
-
-                st.divider()
-
-                col1, col2 = st.columns(2)
-
-                with col1:
-
-                    st.write(
-                        f"**Tạm tính:** "
-                        f"{format_money(row['subtotal'])}"
-                    )
-
-                    st.write(
-                        f"**Giảm giá:** "
-                        f"-{format_money(row['discount'])}"
-                    )
-
-                    st.write(
-                        f"**Phí phục vụ:** "
-                        f"{format_money(row['service_charge'])}"
-                    )
-
-                    st.write(
-                        f"**VAT:** "
-                        f"{format_money(row['vat'])}"
-                    )
-
-                with col2:
-
-                    st.markdown(
-                        f"""
-                        ### Tổng thanh toán
-
-                        ## {format_money(row['total'])}
-
-                        Khách đưa:
-
-                        **{format_money(row['money_received'])}**
-
-                        Tiền thừa:
-
-                        **{format_money(row['change_amount'])}**
-                        """
-                    )
-
-
-# ============================================================
-# 9. DOANH THU
-# ============================================================
-
-elif menu_page == "📊 Doanh thu":
-
-    st.title("📊 Báo cáo doanh thu")
-
-    conn = get_connection()
-
-    revenue_df = pd.read_sql_query(
+    invoices = conn.execute(
         """
         SELECT *
         FROM invoices
-        ORDER BY id DESC
+        WHERE created_at BETWEEN ? AND ?
+        ORDER BY created_at DESC
         """,
-        conn
-    )
+        (start, end)
+    ).fetchall()
 
     conn.close()
 
-    if revenue_df.empty:
+    if not invoices:
 
-        st.info(
-            "Chưa có dữ liệu doanh thu."
-        )
+        st.info("Không có dữ liệu trong khoảng thời gian này.")
 
     else:
 
-        # ----------------------------------------------------
-        # TỔNG QUAN
-        # ----------------------------------------------------
-
-        total_revenue = revenue_df["total"].sum()
-
-        total_orders = len(revenue_df)
-
-        average_bill = (
-            total_revenue / total_orders
-            if total_orders > 0
-            else 0
+        df = pd.DataFrame(
+            [dict(x) for x in invoices]
         )
 
-        col1, col2, col3 = st.columns(3)
+        total_revenue = df["total"].sum()
+        count = len(df)
+        average = total_revenue / count
 
-        with col1:
+        c1, c2, c3 = st.columns(3)
 
-            st.metric(
-                "💰 Tổng doanh thu",
-                format_money(total_revenue)
-            )
+        c1.metric(
+            "💰 Tổng doanh thu",
+            money(total_revenue)
+        )
 
-        with col2:
+        c2.metric(
+            "🧾 Số hóa đơn",
+            count
+        )
 
-            st.metric(
-                "🧾 Tổng hóa đơn",
-                total_orders
-            )
-
-        with col3:
-
-            st.metric(
-                "📈 Giá trị bill TB",
-                format_money(average_bill)
-            )
+        c3.metric(
+            "📈 Trung bình / hóa đơn",
+            money(average)
+        )
 
         st.divider()
 
-        # ----------------------------------------------------
-        # DOANH THU THEO NGÀY
-        # ----------------------------------------------------
-
-        revenue_df["Ngày"] = pd.to_datetime(
-            revenue_df["created_at"],
-            dayfirst=True
+        df["Ngày"] = pd.to_datetime(
+            df["created_at"]
         ).dt.date
 
-        daily_revenue = (
-            revenue_df
-            .groupby("Ngày")["total"]
+        daily = (
+            df.groupby("Ngày")["total"]
             .sum()
             .reset_index()
         )
 
-        daily_revenue.columns = [
-            "Ngày",
-            "Doanh thu"
-        ]
-
-        st.subheader(
-            "📅 Doanh thu theo ngày"
-        )
+        daily["Doanh thu"] = daily["total"].apply(money)
 
         st.dataframe(
-            daily_revenue,
+            daily[
+                ["Ngày", "Doanh thu"]
+            ],
             use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Doanh thu":
-                    st.column_config.NumberColumn(
-                        format="%,d VNĐ"
-                    )
-            }
-        )
-
-        # ----------------------------------------------------
-        # DOANH THU THEO NHÂN VIÊN
-        # ----------------------------------------------------
-
-        st.subheader(
-            "👨‍🍳 Doanh thu theo nhân viên"
-        )
-
-        employee_revenue = (
-            revenue_df
-            .groupby("employee")["total"]
-            .sum()
-            .reset_index()
-        )
-
-        employee_revenue.columns = [
-            "Nhân viên",
-            "Doanh thu"
-        ]
-
-        st.dataframe(
-            employee_revenue,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Doanh thu":
-                    st.column_config.NumberColumn(
-                        format="%,d VNĐ"
-                    )
-            }
-        )
-
-        # ----------------------------------------------------
-        # PHƯƠNG THỨC THANH TOÁN
-        # ----------------------------------------------------
-
-        st.subheader(
-            "💳 Doanh thu theo phương thức thanh toán"
-        )
-
-        payment_revenue = (
-            revenue_df
-            .groupby("payment_method")["total"]
-            .sum()
-            .reset_index()
-        )
-
-        payment_revenue.columns = [
-            "Phương thức",
-            "Doanh thu"
-        ]
-
-        st.dataframe(
-            payment_revenue,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Doanh thu":
-                    st.column_config.NumberColumn(
-                        format="%,d VNĐ"
-                    )
-            }
+            hide_index=True
         )
