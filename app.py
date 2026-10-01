@@ -9,7 +9,7 @@ import streamlit as st
 # =========================================================
 
 st.set_page_config(
-    page_title="Nhà Hàng Cỏ Bốn Lá",
+    page_title="Nhà Hàng Cỏ BỐN LÁ",
     page_icon="🍀",
     layout="wide"
 )
@@ -18,7 +18,7 @@ DB = "co_bon_la.db"
 LOGO = "Logo1.JPG"
 
 # =========================================================
-# DATABASE
+# DATABASE & MIGRATION AUTOMATION
 # =========================================================
 
 def connect_db():
@@ -72,6 +72,27 @@ def init_db():
             amount REAL
         )
     """)
+
+    # --- TỰ ĐỘNG MIGRATION (CẬP NHẬT CỘT CHO DATABASE CŨ) ---
+    cur.execute("PRAGMA table_info(invoices)")
+    columns = [column[1] for column in cur.fetchall()]
+    
+    # Kiểm tra và tự động thêm các cột bị thiếu trong DB cũ
+    required_columns = {
+        "customer": "TEXT",
+        "subtotal": "REAL",
+        "discount": "REAL",
+        "service_charge": "REAL",
+        "vat": "REAL",
+        "total": "REAL",
+        "payment_method": "TEXT",
+        "received": "REAL",
+        "change_money": "REAL"
+    }
+
+    for col, col_type in required_columns.items():
+        if col not in columns:
+            cur.execute(f"ALTER TABLE invoices ADD COLUMN {col} {col_type}")
 
     # Menu mẫu - chỉ tạo nếu database chưa có món
     cur.execute("SELECT COUNT(*) FROM menu")
@@ -289,8 +310,7 @@ if page == "🧾 Bán hàng":
 
     st.divider()
 
-    # MENU CHỮ
-    st.markdown("### 🍽️ MENU MÓN ĂN")
+    st.markdown("### 🍽️️ MENU MÓN ĂN")
 
     menu = get_menu()
 
@@ -366,7 +386,6 @@ if page == "🧾 Bán hàng":
 
     st.divider()
 
-    # GIỎ HÀNG
     st.markdown("### 🛒 MÓN ĐÃ CHỌN")
 
     if not st.session_state.cart:
@@ -491,7 +510,6 @@ if page == "🧾 Bán hàng":
                     st.error("Tiền khách đưa chưa đủ.")
                 else:
                     code = invoice_code()
-                    # Chuẩn hóa thời gian ISO YYYY-MM-DD HH:MM:SS để hỗ trợ truy vấn SQL BETWEEN
                     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                     info = {
